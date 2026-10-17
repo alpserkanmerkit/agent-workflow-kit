@@ -1,0 +1,54 @@
+# agent-workflow-kit — test foundation (AGENT-6). No product code; this file only carries tool settings (not a package).
+# Sources and rationale: docs/test-temel-ajan6.md
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+# https://docs.pytest.org/en/stable/explanation/goodpractices.html : "If no arguments are specified then
+# collection starts from testpaths (if configured) or the current directory."
+testpaths = ["hooks"]
+# The default pattern (test_*.py / *_test.py) is spelled out. hooks/bash-guard-lite-test.py does NOT match it
+# ("-test", not "_test") and has no test_-prefixed function: pytest does not collect it; its 10 scenarios
+# are collected through hooks/tests/test_bash_guard_lite.py (the file was not deleted; it also runs as a script).
+python_files = ["test_*.py", "*_test.py"]
+# "For new projects, we recommend to use importlib" (goodpractices); test files do not need unique names.
+addopts = ["-ra", "--strict-markers", "--strict-config", "--import-mode=importlib"]
+# Test sizes (Google Testing Blog, "Test Sizes"): hooks/tests/conftest.py requires EXACTLY ONE size per test
+# and fails the test if the size's time limit (small 60 s, medium 300 s, large 900 s) is exceeded.
+markers = [
+    "small: no network/DB/filesystem/sleep/subprocess; single process, a fraction of a second (Google 'Small')",
+    "medium: local filesystem and/or local subprocess (git, bash, python); no network (Google 'Medium', localhost only)",
+    "large: networked/end-to-end; not used in this repo (Google 'Large')",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["hooks"]
+# Note: hook lines that run as a subprocess (python -I -S) are NOT measured (no patch/parallel setting); `__main__` lines therefore count as missed.
+omit = ["hooks/tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
+# Measured: 79% (existing tests only) -> 98.6% (with the added tests); threshold 95%: if coverage drops, CI goes red.
+fail_under = 95
+
+[tool.ruff]
+line-length = 130  # existing format in the repo (130 so ruff format --check stays clean; no bulk reformatting)
+target-version = "py312"  # CI: Python 3.12 (template/.github/workflows/ci.yml)
+
+[tool.ruff.lint]
+# Version-independent explicit set (ruff 0.16's default is broad and changes between versions; see docs/test-temel-ajan6.md):
+# E4/E7/E9 + F = pycodestyle/pyflakes core, B = bugbear, UP = pyupgrade, BLE = blind except,
+# PLW1510 = subprocess.run check=, RUF100 = unused noqa.
+select = ["E4", "E7", "E9", "F", "B", "UP", "BLE", "PLW1510", "RUF100"]
+
+[tool.ruff.lint.per-file-ignores]
+# Hooks are DELIBERATELY fail-open: a hook error must not lock up the agent (hooks/ci_wait_hook.py docstring: "hook error -> silent exit 0").
+# So the blind `except Exception` is by design; the subprocess return code is read by hand instead of check=.
+# B904 (raise ... from) and UP017 (datetime.UTC) are purely stylistic/same behavior: application code was deliberately left unchanged, the finding is noted in the report.
+"hooks/wait_mode.py" = ["BLE001"]
+"hooks/ci_wait_hook.py" = ["BLE001", "PLW1510", "B904", "UP017"]
+
+[tool.bandit]
+# assert (B101) and subprocess (B404/B603/B607) in test code are normal for pytest; application code and scripts are scanned.
+exclude_dirs = ["hooks/tests"]

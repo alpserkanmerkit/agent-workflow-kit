@@ -1,0 +1,119 @@
+# Single CI: ubuntu-latest. Language blocks turn on when the repo has files in that language (detect job).
+name: CI
+
+on:
+  push:
+    branches: [main, 'gece/**']
+    paths-ignore: ['**.md', 'docs/**']
+  pull_request:
+    paths-ignore: ['**.md', 'docs/**']
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      # The binary is run directly: independent of license/account type, same version as the local one.
+      - name: gitleaks
+        env:
+          GL_VERSION: 8.30.1
+        run: |
+          curl -sSfL -o gl.tgz "https://github.com/gitleaks/gitleaks/releases/download/v${GL_VERSION}/gitleaks_${GL_VERSION}_linux_x64.tar.gz"
+          curl -sSfL -o sums.txt "https://github.com/gitleaks/gitleaks/releases/download/v${GL_VERSION}/gitleaks_${GL_VERSION}_checksums.txt"
+          grep linux_x64.tar.gz sums.txt | sed 's/ .*/  gl.tgz/' | sha256sum -c -
+          tar -xzf gl.tgz gitleaks
+          # Only this branch's history: a leak on another branch must not turn every branch red (that branch is red in its own CI).
+          ./gitleaks git --redact --no-banner -v --log-opts="HEAD" .
+
+  detect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      python: ${{ steps.d.outputs.python }}
+      node: ${{ steps.d.outputs.node }}
+      flutter: ${{ steps.d.outputs.flutter }}
+      shell: ${{ steps.d.outputs.shell }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: d
+        run: |
+          has() { [ -n "$(git ls-files "$@" | head -1)" ] && echo true || echo false; }
+          echo "python=$(has '*.py')" >> "$GITHUB_OUTPUT"
+          echo "node=$(has package.json)" >> "$GITHUB_OUTPUT"
+          echo "flutter=$(has pubspec.yaml)" >> "$GITHUB_OUTPUT"
+          echo "shell=$(has '*.sh')" >> "$GITHUB_OUTPUT"
+
+  python:
+    needs: detect
+    if: needs.detect.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            **/requirements*.txt
+            **/pyproject.toml
+      - name: dependencies
+        run: |
+          python -m pip install --upgrade pip ruff pytest
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f pyproject.toml ]; then pip install -e . || true; fi
+      - run: ruff check .
+      - run: ruff format --check .
+      # If 0 tests are collected pytest returns 5 -> red (no fake green).
+      - run: pytest -q
+
+  node:
+    needs: detect
+    if: needs.detect.outputs.node == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run lint --if-present
+      - run: npm test
+
+  flutter:
+    needs: detect
+    if: needs.detect.outputs.flutter == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: dart format --output=none --set-exit-if-changed .
+      - run: flutter analyze
+      - run: flutter test
+
+  shell:
+    needs: detect
+    if: needs.detect.outputs.shell == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - run: git ls-files -z '*.sh' | xargs -0 shellcheck
